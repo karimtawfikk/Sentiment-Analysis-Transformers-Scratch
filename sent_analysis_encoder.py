@@ -3,35 +3,20 @@ import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
 from collections import Counter
-from datasets import load_dataset
 
 # ---------- Tokenizer & Vocab ----------
 def tokenize(text):
     return re.findall(r"\b\w+\b", text.lower())
 
-dataset = load_dataset("imdb")
-train_data = dataset["train"]
-test_data = dataset["test"]
-
-all_tokens = []
-for sample in train_data:
-    all_tokens.extend(tokenize(sample["text"]))
-
-token_freq = Counter(all_tokens)
-vocab_size = 10000
-most_common = token_freq.most_common(vocab_size - 4)
-
+# Initialize with minimal vocab to allow import
 vocab = {
     "<PAD>": 0,
     "<UNK>": 1,
     "<CLS>": 2,
     "<SEP>": 3
 }
-for idx, (word, _) in enumerate(most_common, start=4):
-    vocab[word] = idx
 
 inv_vocab = {v: k for k, v in vocab.items()}
-
 
 def encode(text, max_len=128):
     tokens = tokenize(text)
@@ -43,7 +28,7 @@ def encode(text, max_len=128):
 
 # ---------- Dataset Class ----------
 class IMDBDataset(Dataset):
-    def __init__(self, split):
+    def __init__(self, split, dataset):
         self.data = dataset[split]
 
     def __len__(self):
@@ -113,16 +98,39 @@ def predict_sentiment(text, model, vocab, max_len=128):
     label_map = {0: "Negative", 1: "Positive"}
     return label_map[prediction]
 
-# ---------- Only for training (protected) ---------- (ran when only running this file, cause when running app.py it trains the model,now it doesnt)
+# ---------- Only for training ----------
 if __name__ == "__main__":
+    from datasets import load_dataset
     from torch.utils.data import DataLoader
     import torch.optim as optim
     from sklearn.metrics import confusion_matrix, classification_report, ConfusionMatrixDisplay
     import matplotlib.pyplot as plt
     from tqdm import tqdm
 
-    train_loader = DataLoader(IMDBDataset("train"), batch_size=32, shuffle=True)
-    test_loader = DataLoader(IMDBDataset("test"), batch_size=32)
+    dataset = load_dataset("imdb")
+    train_data = dataset["train"]
+    test_data = dataset["test"]
+
+    all_tokens = []
+    for sample in train_data:
+        all_tokens.extend(tokenize(sample["text"]))
+
+    token_freq = Counter(all_tokens)
+    vocab_size = 10000
+    most_common = token_freq.most_common(vocab_size - 4)
+
+    vocab = {
+        "<PAD>": 0,
+        "<UNK>": 1,
+        "<CLS>": 2,
+        "<SEP>": 3
+    }
+    for idx, (word, _) in enumerate(most_common, start=4):
+        vocab[word] = idx
+    inv_vocab = {v: k for k, v in vocab.items()}
+
+    train_loader = DataLoader(IMDBDataset("train", dataset), batch_size=32, shuffle=True)
+    test_loader = DataLoader(IMDBDataset("test", dataset), batch_size=32)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -176,7 +184,6 @@ if __name__ == "__main__":
 
     torch.save(model.state_dict(), "sentiment_transformer.pth")
 
-    # Final Confusion Matrix
     all_preds, all_labels = [], []
     model.eval()
     with torch.no_grad():
