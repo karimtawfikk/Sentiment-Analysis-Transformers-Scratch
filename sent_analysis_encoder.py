@@ -1,4 +1,5 @@
 import re
+import json
 import torch
 import torch.nn as nn
 from torch.utils.data import Dataset
@@ -8,22 +9,19 @@ from collections import Counter
 def tokenize(text):
     return re.findall(r"\b\w+\b", text.lower())
 
-# Initialize with minimal vocab to allow import
-vocab = {
-    "<PAD>": 0,
-    "<UNK>": 1,
-    "<CLS>": 2,
-    "<SEP>": 3
-}
+# Load vocab from external file
+with open("vocab.json", "r") as f:
+    vocab = json.load(f)
 
+# Ensure keys are strings, values are ints
+vocab = {str(k): int(v) for k, v in vocab.items()}
 inv_vocab = {v: k for k, v in vocab.items()}
 
 def encode(text, max_len=128):
     tokens = tokenize(text)
     token_ids = [vocab.get(tok, vocab["<UNK>"]) for tok in tokens]
     token_ids = [vocab["<CLS>"]] + token_ids[:max_len - 2] + [vocab["<SEP>"]]
-    pad_len = max_len - len(token_ids)
-    token_ids += [vocab["<PAD>"]] * pad_len
+    token_ids += [vocab["<PAD>"]] * (max_len - len(token_ids))
     return token_ids
 
 # ---------- Dataset Class ----------
@@ -40,7 +38,7 @@ class IMDBDataset(Dataset):
         token_ids = encode(text)
         return torch.tensor(token_ids), torch.tensor(label)
 
-# ---------- Transformer Encoder Block ----------
+# ---------- Transformer Components ----------
 class TransformerEncoderBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, ff_dim, dropout=0.1):
         super().__init__()
@@ -61,7 +59,6 @@ class TransformerEncoderBlock(nn.Module):
         x = self.norm2(x + self.dropout(ff_output))
         return x
 
-# ---------- Main Transformer Model ----------
 class SentimentTransformer(nn.Module):
     def __init__(self, vocab_size, max_len, embed_dim, num_heads, ff_dim, num_layers, num_classes):
         super().__init__()
@@ -81,126 +78,12 @@ class SentimentTransformer(nn.Module):
         x = self.pool(x).squeeze(-1)
         return self.classifier(x)
 
-# ---------- Inference Function ----------
+# ---------- Inference ----------
 def predict_sentiment(text, model, vocab, max_len=128):
     model.eval()
-    tokens = tokenize(text)
-    token_ids = [vocab.get(tok, vocab["<UNK>"]) for tok in tokens]
-    token_ids = [vocab["<CLS>"]] + token_ids[:max_len - 2] + [vocab["<SEP>"]]
-    pad_len = max_len - len(token_ids)
-    token_ids += [vocab["<PAD>"]] * pad_len
-
+    token_ids = encode(text, max_len)
     input_tensor = torch.tensor([token_ids]).to(next(model.parameters()).device)
     with torch.no_grad():
         logits = model(input_tensor)
         prediction = torch.argmax(logits, dim=1).item()
-
-    label_map = {0: "Negative", 1: "Positive"}
-    return label_map[prediction]
-
-# ---------- Only for training ----------
-if __name__ == "__main__":
-    from datasets import load_dataset
-    from torch.utils.data import DataLoader
-    import torch.optim as optim
-    from sklearn.metrics import confusion_matrix, classification_report, ConfusionMatrixDisplay
-    import matplotlib.pyplot as plt
-    from tqdm import tqdm
-
-    dataset = load_dataset("imdb")
-    train_data = dataset["train"]
-    test_data = dataset["test"]
-
-    all_tokens = []
-    for sample in train_data:
-        all_tokens.extend(tokenize(sample["text"]))
-
-    token_freq = Counter(all_tokens)
-    vocab_size = 10000
-    most_common = token_freq.most_common(vocab_size - 4)
-
-    vocab = {
-        "<PAD>": 0,
-        "<UNK>": 1,
-        "<CLS>": 2,
-        "<SEP>": 3
-    }
-    for idx, (word, _) in enumerate(most_common, start=4):
-        vocab[word] = idx
-    inv_vocab = {v: k for k, v in vocab.items()}
-
-    train_loader = DataLoader(IMDBDataset("train", dataset), batch_size=32, shuffle=True)
-    test_loader = DataLoader(IMDBDataset("test", dataset), batch_size=32)
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    model = SentimentTransformer(
-        vocab_size=len(vocab),
-        max_len=128,
-        embed_dim=128,
-        num_heads=4,
-        ff_dim=256,
-        num_layers=5,
-        num_classes=2
-    ).to(device)
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=3e-4)
-
-    def train_one_epoch(model, loader, criterion, optimizer):
-        model.train()
-        total_loss, correct, total = 0, 0, 0
-        for inputs, labels in tqdm(loader):
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs)
-            loss = criterion(outputs, labels)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-            correct += (outputs.argmax(1) == labels).sum().item()
-            total += labels.size(0)
-        return total_loss / len(loader), correct / total
-
-    def evaluate(model, loader, criterion):
-        model.eval()
-        total_loss, correct, total = 0, 0, 0
-        with torch.no_grad():
-            for inputs, labels in loader:
-                inputs, labels = inputs.to(device), labels.to(device)
-                outputs = model(inputs)
-                loss = criterion(outputs, labels)
-                total_loss += loss.item()
-                correct += (outputs.argmax(1) == labels).sum().item()
-                total += labels.size(0)
-        return total_loss / len(loader), correct / total
-
-    for epoch in range(4):
-        print(f"\nEpoch {epoch + 1}/4")
-        train_loss, train_acc = train_one_epoch(model, train_loader, criterion, optimizer)
-        val_loss, val_acc = evaluate(model, test_loader, criterion)
-        print(f"Train Loss: {train_loss:.4f}, Accuracy: {train_acc:.4f}")
-        print(f"Val   Loss: {val_loss:.4f}, Accuracy: {val_acc:.4f}")
-
-    torch.save(model.state_dict(), "sentiment_transformer.pth")
-
-    all_preds, all_labels = [], []
-    model.eval()
-    with torch.no_grad():
-        for inputs, labels in test_loader:
-            inputs, labels = inputs.to(device), labels.to(device)
-            outputs = model(inputs)
-            preds = outputs.argmax(1)
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-
-    cm = confusion_matrix(all_labels, all_preds)
-    print("\nConfusion Matrix:")
-    print(cm)
-    print("\nClassification Report:")
-    print(classification_report(all_labels, all_preds, target_names=["Negative", "Positive"]))
-
-    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=["Negative", "Positive"])
-    disp.plot(cmap=plt.cm.Blues)
-    plt.title("Confusion Matrix")
-    plt.show()
+    return {0: "Negative", 1: "Positive"}.get(prediction, "Unknown")
