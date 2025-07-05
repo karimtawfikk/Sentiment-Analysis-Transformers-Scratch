@@ -2,7 +2,6 @@ import streamlit as st
 import torch
 from sent_analysis_encoder import SentimentTransformer, vocab, predict_sentiment
 
-# Model config (must match training exactly)
 embed_dim = 128
 num_heads = 4
 ff_dim = 256
@@ -25,7 +24,6 @@ model = SentimentTransformer(
 model.load_state_dict(torch.load("sentiment_transformer.pth", map_location=device))
 model.eval()
 
-# Streamlit UI
 st.title("🎭 Sentiment Analysis Transformer")
 st.write("Enter your review below, and the model will predict its sentiment.")
 
